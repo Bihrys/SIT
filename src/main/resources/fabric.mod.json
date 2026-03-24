@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "id": "sit",
+  "version": "${version}",
+  "name": "SIT",
+  "description": "这是一个fabirc的sit模组",
+  "authors": [],
+  "contact": {},
+  "license": "All-Rights-Reserved",
+  "icon": "assets/sit/icon.png",
+  "environment": "*",
+  "entrypoints": {
+    "fabric-datagen": [
+      "bhw.voident.xyz.sit.client.SitDataGenerator"
+    ],
+    "client": [
+      "bhw.voident.xyz.sit.client.SitClient"
+    ],
+    "main": [
+      "bhw.voident.xyz.sit.Sit"
+    ]
+  },
+  "mixins": [
+    "sit.mixins.json",
+    {
+      "config": "sit.client.mixins.json",
+      "environment": "client"
+    }
+  ],
+  "depends": {
+    "fabricloader": ">=${loader_version}",
+    "fabric-api": "*",
+    "minecraft": "${minecraft_version}"
+  }
+}
