@@ -3,11 +3,10 @@
   "id": "sit",
   "version": "${version}",
   "name": "SIT",
-  "description": "这是一个fabirc的sit模组",
+  "description": "Sit on slabs, stairs, and other players.",
   "authors": [],
   "contact": {},
   "license": "All-Rights-Reserved",
-  "icon": "assets/sit/icon.png",
   "environment": "*",
   "entrypoints": {
     "fabric-datagen": [
