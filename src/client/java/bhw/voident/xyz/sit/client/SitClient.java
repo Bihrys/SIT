@@ -2,29 +2,46 @@ package bhw.voident.xyz.sit.client;
 
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
-import net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking;
+import net.fabricmc.fabric.api.client.rendering.v1.EntityRendererRegistry;
+import net.minecraft.client.render.Frustum;
+import net.minecraft.client.render.entity.EntityRenderer;
+import net.minecraft.client.render.entity.EntityRendererFactory;
+import net.minecraft.entity.player.PlayerEntity;
+import net.minecraft.util.Identifier;
 
+import bhw.voident.xyz.sit.Sit;
 import bhw.voident.xyz.sit.SitLogic;
-import bhw.voident.xyz.sit.network.DismountRidePayload;
+import bhw.voident.xyz.sit.SitSeatEntity;
 
 public class SitClient implements ClientModInitializer {
-    private static boolean jumpPressedLastTick;
 
     @Override
     public void onInitializeClient() {
+        EntityRendererRegistry.register(Sit.SIT_ENTITY_TYPE, EmptyRenderer::new);
         ClientTickEvents.END_CLIENT_TICK.register(client -> {
-            boolean jumpPressed = client.options.jumpKey.isPressed();
-
-            if (client.player == null || client.currentScreen != null) {
-                jumpPressedLastTick = jumpPressed;
+            if (client.world == null) {
                 return;
             }
 
-            if (jumpPressed && !jumpPressedLastTick && SitLogic.isModRide(client.player.getVehicle())) {
-                ClientPlayNetworking.send(DismountRidePayload.INSTANCE);
+            for (PlayerEntity player : client.world.getPlayers()) {
+                SitLogic.updateRiderPose(player);
             }
-
-            jumpPressedLastTick = jumpPressed;
         });
+    }
+
+    private static class EmptyRenderer extends EntityRenderer<SitSeatEntity> {
+        protected EmptyRenderer(EntityRendererFactory.Context ctx) {
+            super(ctx);
+        }
+
+        @Override
+        public boolean shouldRender(SitSeatEntity entity, Frustum frustum, double x, double y, double z) {
+            return false;
+        }
+
+        @Override
+        public Identifier getTexture(SitSeatEntity entity) {
+            return null;
+        }
     }
 }

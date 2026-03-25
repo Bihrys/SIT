@@ -6,29 +6,24 @@ import java.util.Set;
 import java.util.UUID;
 
 import net.minecraft.block.BlockState;
-import net.minecraft.block.ShapeContext;
 import net.minecraft.block.SlabBlock;
 import net.minecraft.block.StairsBlock;
+import net.minecraft.block.enums.BlockHalf;
 import net.minecraft.block.enums.SlabType;
 import net.minecraft.entity.Entity;
-import net.minecraft.entity.decoration.ArmorStandEntity;
 import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.server.network.ServerPlayerEntity;
 import net.minecraft.server.world.ServerWorld;
-import net.minecraft.text.Text;
 import net.minecraft.util.Hand;
-import net.minecraft.util.TypeFilter;
 import net.minecraft.util.hit.BlockHitResult;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Box;
 import net.minecraft.util.math.Direction;
 import net.minecraft.util.math.Vec3d;
-import net.minecraft.util.shape.VoxelShape;
+import net.minecraft.world.World;
 
 public final class SitLogic {
-    private static final String SEAT_NAME = "sit$seat";
     private static final double SEAT_SEARCH_RADIUS = 0.35D;
-    private static final double BOX_EPSILON = 1.0E-5D;
     private static final Set<UUID> ACTIVE_SNEAKS = new HashSet<>();
 
     private SitLogic() {
@@ -36,10 +31,14 @@ public final class SitLogic {
 
     public static boolean canSitOn(BlockState state) {
         if (state.getBlock() instanceof SlabBlock) {
-            return state.get(SlabBlock.TYPE) != SlabType.DOUBLE;
+            return state.get(SlabBlock.TYPE) == SlabType.BOTTOM;
         }
 
-        return state.getBlock() instanceof StairsBlock;
+        if (state.getBlock() instanceof StairsBlock) {
+            return state.get(StairsBlock.HALF) == BlockHalf.BOTTOM;
+        }
+
+        return false;
     }
 
     public static boolean canStack(PlayerEntity rider, Hand hand, PlayerEntity target) {
@@ -47,31 +46,61 @@ public final class SitLogic {
                 && hand == Hand.MAIN_HAND
                 && rider.getStackInHand(hand).isEmpty()
                 && rider != target
-                && target.isAlive();
+                && target.isAlive()
+                && rider.getVehicle() == null;
     }
 
     public static boolean trySitOnBlock(ServerPlayerEntity player, ServerWorld world, BlockPos pos, BlockState state, BlockHitResult hitResult) {
-        Vec3d seatPos = getSeatPos(world, pos, state, hitResult);
-        if (seatPos == null) {
+        if (!canAttemptSit(player, world, pos, state, hitResult)) {
             return false;
         }
 
-        ArmorStandEntity seat = findSeat(world, seatPos);
-        boolean created = false;
-
+        SitSeatEntity seat = findSeat(world, pos);
         if (seat == null) {
-            seat = createSeat(world, seatPos, player.getYaw());
-            created = true;
+            seat = new SitSeatEntity(world);
+            seat.refreshPositionAndAngles(pos.getX() + 0.5D, pos.getY() + 0.5D, pos.getZ() + 0.5D, getSeatYaw(state, player), 0.0F);
+            SitUtil.addSitEntity(world, pos, seat, player.getPos());
+            world.spawnEntity(seat);
         } else if (seat.hasPassengers()) {
             return false;
+        } else {
+            SitUtil.addSitEntity(world, pos, seat, player.getPos());
         }
 
         boolean mounted = player.startRiding(seat, true);
-        if (!mounted && created) {
+        if (!mounted) {
             seat.discard();
         }
 
         return mounted;
+    }
+
+    public static boolean canAttemptSit(PlayerEntity player, World world, BlockPos pos, BlockState state, BlockHitResult hitResult) {
+        if (!canSitOn(state)) {
+            return false;
+        }
+
+        if (hitResult.getSide() != Direction.UP) {
+            return false;
+        }
+
+        if (player.isSneaking() || SitUtil.isPlayerSitting(player)) {
+            return false;
+        }
+
+        if (!player.getStackInHand(Hand.MAIN_HAND).isEmpty()) {
+            return false;
+        }
+
+        if (!world.canPlayerModifyAt(player, pos)) {
+            return false;
+        }
+
+        if (!isPlayerInRange(player, pos)) {
+            return false;
+        }
+
+        return !isSeatOccupied(world, pos);
     }
 
     public static boolean tryStackOnPlayer(ServerPlayerEntity rider, PlayerEntity target) {
@@ -105,17 +134,9 @@ public final class SitLogic {
         }
     }
 
-    public static void tryDismountModRide(ServerPlayerEntity player) {
-        Entity vehicle = player.getVehicle();
-        if (!isModRide(vehicle)) {
-            return;
-        }
-
-        player.stopRiding();
-
-        if (isSeatEntity(vehicle) && vehicle != null && !vehicle.hasPassengers()) {
-            vehicle.discard();
-        }
+    public static void tickServerPlayer(ServerPlayerEntity player) {
+        handleSneak(player);
+        updateRiderPose(player);
     }
 
     public static void cleanupSeats(ServerWorld world) {
@@ -128,14 +149,14 @@ public final class SitLogic {
                 continue;
             }
 
-            if (!entity.hasPassengers() || !isValidSeatBlock(world, entity.getPos())) {
+            if (!entity.hasPassengers() || !isValidSeatBlock(world, entity.getBlockPos())) {
                 entity.discard();
             }
         }
     }
 
     public static boolean shouldShiftBeHandledByMod(PlayerEntity player) {
-        return isModRide(player.getVehicle()) || player.hasPassengers();
+        return player.hasPassengers();
     }
 
     public static boolean isModRide(Entity vehicle) {
@@ -143,95 +164,84 @@ public final class SitLogic {
     }
 
     public static boolean isSeatEntity(Entity entity) {
-        if (!(entity instanceof ArmorStandEntity armorStand)) {
-            return false;
-        }
-
-        if (!armorStand.isMarker() || !armorStand.isInvisible()) {
-            return false;
-        }
-
-        Text name = armorStand.getCustomName();
-        return name != null && SEAT_NAME.equals(name.getString());
+        return entity instanceof SitSeatEntity;
     }
 
-    private static ArmorStandEntity createSeat(ServerWorld world, Vec3d seatPos, float yaw) {
-        ArmorStandEntity seat = new ArmorStandEntity(world, seatPos.x, seatPos.y, seatPos.z);
-        seat.setYaw(yaw);
-        seat.setInvisible(true);
-        seat.setMarker(true);
-        seat.setNoGravity(true);
-        seat.setSilent(true);
-        seat.setInvulnerable(true);
-        seat.setCustomName(Text.literal(SEAT_NAME));
-        seat.setCustomNameVisible(false);
-        world.spawnEntity(seat);
-        return seat;
-    }
-
-    private static ArmorStandEntity findSeat(ServerWorld world, Vec3d seatPos) {
-        Box searchBox = Box.of(seatPos, SEAT_SEARCH_RADIUS, 0.6D, SEAT_SEARCH_RADIUS);
-        List<ArmorStandEntity> seats = world.getEntitiesByType(
-                TypeFilter.instanceOf(ArmorStandEntity.class),
-                searchBox,
-                SitLogic::isSeatEntity
-        );
-
-        for (ArmorStandEntity seat : seats) {
-            if (seat.squaredDistanceTo(seatPos) < 0.0025D) {
-                return seat;
-            }
+    public static boolean isSeatOccupied(World world, BlockPos pos) {
+        SitSeatEntity seat = SitUtil.getSitEntity(world, pos);
+        if (seat != null) {
+            return seat.hasPassengers();
         }
 
-        return null;
+        seat = findSeat(world, pos);
+        return seat != null && seat.hasPassengers();
     }
 
-    private static Vec3d getSeatPos(ServerWorld world, BlockPos pos, BlockState state, BlockHitResult hitResult) {
-        VoxelShape shape = state.getCollisionShape(world, pos, ShapeContext.absent());
-        if (shape.isEmpty()) {
-            return null;
+    public static void updateRiderPose(PlayerEntity rider) {
+        Entity vehicle = rider.getVehicle();
+        if (vehicle == null) {
+            return;
         }
 
-        double localX = Math.clamp(hitResult.getPos().x - pos.getX(), 0.1D, 0.9D);
-        double localZ = Math.clamp(hitResult.getPos().z - pos.getZ(), 0.1D, 0.9D);
-        double seatX = 0.5D;
-        double seatZ = 0.5D;
-        double topY = shape.getMax(Direction.Axis.Y);
-        boolean matched = false;
-
-        for (Box box : shape.getBoundingBoxes()) {
-            if (!covers(box, localX, localZ)) {
-                continue;
-            }
-
-            if (!matched || box.maxY > topY + BOX_EPSILON) {
-                matched = true;
-                topY = box.maxY;
-                seatX = clampInside(localX, box.minX, box.maxX);
-                seatZ = clampInside(localZ, box.minZ, box.maxZ);
-            }
+        if (vehicle instanceof PlayerEntity) {
+            alignBodyToHead(rider);
+            return;
         }
 
-        return new Vec3d(pos.getX() + seatX, pos.getY() + topY, pos.getZ() + seatZ);
-    }
-
-    private static boolean isValidSeatBlock(ServerWorld world, Vec3d seatPos) {
-        BlockPos blockPos = BlockPos.ofFloored(seatPos.x, seatPos.y - 0.05D, seatPos.z);
-        return canSitOn(world.getBlockState(blockPos));
-    }
-
-    private static boolean covers(Box box, double x, double z) {
-        return x >= box.minX - BOX_EPSILON
-                && x <= box.maxX + BOX_EPSILON
-                && z >= box.minZ - BOX_EPSILON
-                && z <= box.maxZ + BOX_EPSILON;
-    }
-
-    private static double clampInside(double value, double min, double max) {
-        if (max - min < 0.1D) {
-            return (min + max) * 0.5D;
+        if (!isSeatEntity(vehicle)) {
+            return;
         }
 
-        return Math.clamp(value, min + 0.05D, max - 0.05D);
+        World world = rider.getWorld();
+        BlockState state = world.getBlockState(vehicle.getBlockPos());
+        if (state.getBlock() instanceof StairsBlock) {
+            rider.setBodyYaw(getStairSeatYaw(state));
+            return;
+        }
+
+        alignBodyToHead(rider);
+    }
+
+    private static void alignBodyToHead(PlayerEntity rider) {
+        rider.setBodyYaw(rider.getHeadYaw());
+    }
+
+    private static float getSeatYaw(BlockState state, PlayerEntity player) {
+        if (state.getBlock() instanceof StairsBlock) {
+            return getStairSeatYaw(state);
+        }
+
+        return player.getYaw();
+    }
+
+    private static float getStairSeatYaw(BlockState state) {
+        Direction facing = state.get(StairsBlock.FACING);
+        return facing.getOpposite().asRotation();
+    }
+
+    public static SitSeatEntity findSeat(World world, BlockPos pos) {
+        Vec3d center = Vec3d.ofCenter(pos);
+        Box searchBox = Box.of(center, SEAT_SEARCH_RADIUS, 0.6D, SEAT_SEARCH_RADIUS);
+        List<SitSeatEntity> seats = world.getEntitiesByType(Sit.SIT_ENTITY_TYPE, searchBox, entity -> true);
+        return seats.isEmpty() ? null : seats.get(0);
+    }
+
+    private static boolean isValidSeatBlock(World world, BlockPos pos) {
+        return canSitOn(world.getBlockState(pos));
+    }
+
+    private static boolean isPlayerInRange(PlayerEntity player, BlockPos pos) {
+        int blockReachDistance = SitConfig.get().getBlockReachDistance();
+        BlockPos playerPos = player.getBlockPos();
+
+        if (blockReachDistance == 0) {
+            return playerPos.getY() - pos.getY() <= 1
+                    && playerPos.getX() == pos.getX()
+                    && playerPos.getZ() == pos.getZ();
+        }
+
+        return Math.abs(playerPos.getX() - pos.getX()) <= blockReachDistance
+                && Math.abs(playerPos.getY() - pos.getY()) <= blockReachDistance
+                && Math.abs(playerPos.getZ() - pos.getZ()) <= blockReachDistance;
     }
 }

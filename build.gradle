@@ -18,7 +18,7 @@ def supportedMinecraftVersions = [
         '1.21.11': [fabricApi: '0.140.0+1.21.11', yarn: '1.21.11+build.4']
 ]
 
-def resolvedMinecraftVersion = (findProperty("minecraft_version") ?: project.minecraft_version).toString()
+def resolvedMinecraftVersion = (findProperty("target_mc") ?: findProperty("minecraft_version") ?: project.minecraft_version).toString()
 if (!supportedMinecraftVersions.containsKey(resolvedMinecraftVersion)) {
     throw new GradleException("Unsupported minecraft_version '${resolvedMinecraftVersion}'. Supported versions: ${supportedMinecraftVersions.keySet().join(', ')}")
 }
@@ -109,6 +109,10 @@ tasks.named("sourcesJar") {
     archiveFileName = "${archiveBaseName}-sources.jar"
 }
 
+tasks.named("remapSourcesJar") {
+    archiveFileName = "${archiveBaseName}-sources.jar"
+}
+
 publishing {
     publications {
         create("mavenJava", MavenPublication) {
@@ -129,7 +133,7 @@ supportedMinecraftVersions.keySet().each { mcVersion ->
         description = "Builds the mod for Minecraft ${mcVersion}."
         dir = projectDir
         tasks = ["build"]
-        startParameter.projectProperties = gradle.startParameter.projectProperties + ["minecraft_version": mcVersion]
+        startParameter.projectProperties = gradle.startParameter.projectProperties + ["target_mc": mcVersion]
     }
 }
 
